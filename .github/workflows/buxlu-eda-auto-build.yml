@@ -1,0 +1,433 @@
+# ============================================================
+# BUXLU-EDA 全自动编译工作流 v3
+# 完全自动化：所有工具从官方仓库自动下载、编译、打包
+# 无需手动操作，push 或手动触发即可运行
+# ============================================================
+
+name: BUXLU-EDA 全自动编译
+
+on:
+  push:
+    branches: [ main, master, dev ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 手动触发
+
+env:
+  BUILD_TYPE: Release
+  INSTALL_PREFIX: /opt/eda
+
+jobs:
+  # ============================================================
+  # Job 1: 安装所有系统依赖（一次性安装）
+  # ============================================================
+  install-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔧 安装全部编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake g++ gcc make ninja-build git \
+            wget curl python3 python3-pip python3-dev \
+            libboost-all-dev libeigen3-dev libspdlog-dev \
+            nlohmann-json3-dev libreadline-dev \
+            tcl-dev tk-dev zlib1g-dev libffi-dev libssl-dev \
+            bison flex autoconf automake libtool pkg-config \
+            qtbase5-dev qttools5-dev libqt5svg5-dev \
+            libqt5opengl5-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrender-dev libxext-dev \
+            libfontconfig1-dev libfreetype6-dev \
+            libxcb-xinerama0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-sync1 libxcb-xfixes0
+
+      - name: ✅ 验证工具版本
+        run: |
+          echo "=== 编译工具链 ==="
+          gcc --version | head -1
+          cmake --version | head -1
+          echo "依赖安装完成"
+
+  # ============================================================
+  # Job 2: 编译 OpenROAD（含 SWIG + third-party）
+  # ============================================================
+  build-openroad:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 OpenROAD（含子模块）
+        run: |
+          git clone --recurse-submodules --depth=1 \
+            https://github.com/The-OpenROAD-Project/OpenROAD.git \
+            ${{ github.workspace }}/openroad
+
+      - name: 🔧 自动安装 SWIG 4.2.1
+        run: |
+          sudo apt-get remove -y swig swig4.0 || true
+          cd /tmp
+          wget -q https://github.com/swig/swig/archive/refs/tags/v4.2.1.tar.gz
+          tar xzf v4.2.1.tar.gz
+          cd swig-4.2.1
+          ./autogen.sh && ./configure --prefix=/usr/local && make -j$(nproc) && sudo make install
+          sudo ldconfig
+
+      - name: 🏗️ 自动编译 OpenROAD
+        working-directory: ${{ github.workspace }}/openroad
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_PREFIX }}/openroad \
+            -DSWIG_EXECUTABLE=/usr/local/bin/swig \
+            -DSWIG_DIR=/usr/local/share/swig/4.2.1
+          make -j$(nproc)
+          sudo make install
+
+      - name: 📦 打包 OpenROAD
+        run: |
+          mkdir -p artifacts/openroad
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/openroad/* artifacts/openroad/
+          find ${{ github.workspace }}/openroad/build -type f -executable -exec cp {} artifacts/openroad/ \; 2>/dev/null || true
+
+      - name: ⬆️ 上传 OpenROAD
+        uses: actions/upload-artifact@v4
+        with:
+          name: openroad
+          path: artifacts/openroad/
+          retention-days: 30
+
+  # ============================================================
+  # Job 3: 编译 OpenSTA
+  # ============================================================
+  build-opensta:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 OpenSTA
+        run: |
+          git clone --depth=1 \
+            https://github.com/The-OpenROAD-Project/OpenSTA.git \
+            ${{ github.workspace }}/opensta
+
+      - name: 🏗️ 自动编译 OpenSTA
+        working-directory: ${{ github.workspace }}/opensta
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_PREFIX }}/opensta
+          make -j$(nproc)
+          sudo make install
+
+      - name: 📦 打包 OpenSTA
+        run: |
+          mkdir -p artifacts/opensta
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/opensta/* artifacts/opensta/
+          find ${{ github.workspace }}/opensta/build -type f -executable -exec cp {} artifacts/opensta/ \; 2>/dev/null || true
+
+      - name: ⬆️ 上传 OpenSTA
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensta
+          path: artifacts/opensta/
+          retention-days: 30
+
+  # ============================================================
+  # Job 4: 编译 Yosys
+  # ============================================================
+  build-yosys:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 Yosys
+        run: |
+          git clone --depth=1 \
+            https://github.com/YosysHQ/yosys.git \
+            ${{ github.workspace }}/yosys
+
+      - name: 🏗️ 自动编译 Yosys
+        working-directory: ${{ github.workspace }}/yosys
+        run: |
+          make -j$(nproc) PREFIX=${{ env.INSTALL_PREFIX }}/yosys
+          sudo make install PREFIX=${{ env.INSTALL_PREFIX }}/yosys
+
+      - name: 📦 打包 Yosys
+        run: |
+          mkdir -p artifacts/yosys
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/yosys/* artifacts/yosys/
+          find ${{ github.workspace }}/yosys -type f -executable -name "yosys" -exec cp {} artifacts/yosys/ \; 2>/dev/null || true
+
+      - name: ⬆️ 上传 Yosys
+        uses: actions/upload-artifact@v4
+        with:
+          name: yosys
+          path: artifacts/yosys/
+          retention-days: 30
+
+  # ============================================================
+  # Job 5: 编译 KLayout
+  # ============================================================
+  build-klayout:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 KLayout
+        run: |
+          git clone --depth=1 \
+            https://github.com/KLayout/klayout.git \
+            ${{ github.workspace }}/klayout
+
+      - name: 🏗️ 自动编译 KLayout
+        working-directory: ${{ github.workspace }}/klayout
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_PREFIX }}/klayout
+          make -j$(nproc)
+          sudo make install
+
+      - name: 📦 打包 KLayout
+        run: |
+          mkdir -p artifacts/klayout
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/klayout/* artifacts/klayout/
+          find ${{ github.workspace }}/klayout/build -type f -executable -exec cp {} artifacts/klayout/ \; 2>/dev/null || true
+
+      - name: ⬆️ 上传 KLayout
+        uses: actions/upload-artifact@v4
+        with:
+          name: klayout
+          path: artifacts/klayout/
+          retention-days: 30
+
+  # ============================================================
+  # Job 6: 编译 OpenTimer
+  # ============================================================
+  build-opentimer:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 OpenTimer
+        run: |
+          git clone --depth=1 \
+            https://github.com/OpenTimer/OpenTimer.git \
+            ${{ github.workspace }}/opentimer
+
+      - name: 🏗️ 自动编译 OpenTimer
+        working-directory: ${{ github.workspace }}/opentimer
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_PREFIX }}/opentimer
+          make -j$(nproc)
+          sudo make install
+
+      - name: 📦 打包 OpenTimer
+        run: |
+          mkdir -p artifacts/opentimer
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/opentimer/* artifacts/opentimer/
+          find ${{ github.workspace }}/opentimer/build -type f -executable -exec cp {} artifacts/opentimer/ \; 2>/dev/null || true
+
+      - name: ⬆️ 上传 OpenTimer
+        uses: actions/upload-artifact@v4
+        with:
+          name: opentimer
+          path: artifacts/opentimer/
+          retention-days: 30
+
+  # ============================================================
+  # Job 7: 编译 netgen
+  # ============================================================
+  build-netgen:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 netgen
+        run: |
+          git clone --depth=1 \
+            https://github.com/RTimothyEdwards/netgen.git \
+            ${{ github.workspace }}/netgen
+
+      - name: 🏗️ 自动编译 netgen
+        working-directory: ${{ github.workspace }}/netgen
+        run: |
+          autoreconf -fi
+          ./configure --prefix=${{ env.INSTALL_PREFIX }}/netgen
+          make -j$(nproc)
+          sudo make install
+
+      - name: 📦 打包 netgen
+        run: |
+          mkdir -p artifacts/netgen
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/netgen/* artifacts/netgen/
+          find ${{ github.workspace }}/netgen -type f -executable -exec cp {} artifacts/netgen/ \; 2>/dev/null || true
+
+      - name: ⬆️ 上传 netgen
+        uses: actions/upload-artifact@v4
+        with:
+          name: netgen
+          path: artifacts/netgen/
+          retention-days: 30
+
+  # ============================================================
+  # Job 8: 编译 tatum
+  # ============================================================
+  build-tatum:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 tatum
+        run: |
+          git clone --depth=1 \
+            https://github.com/The-OpenROAD-Project/tatum.git \
+            ${{ github.workspace }}/tatum
+
+      - name: 🏗️ 自动编译 tatum
+        working-directory: ${{ github.workspace }}/tatum
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_PREFIX }}/tatum
+          make -j$(nproc)
+          sudo make install
+
+      - name: 📦 打包 tatum
+        run: |
+          mkdir -p artifacts/tatum
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/tatum/* artifacts/tatum/
+          find ${{ github.workspace }}/tatum/build -type f -executable -exec cp {} artifacts/tatum/ \; 2>/dev/null || true
+
+      - name: ⬆️ 上传 tatum
+        uses: actions/upload-artifact@v4
+        with:
+          name: tatum
+          path: artifacts/tatum/
+          retention-days: 30
+
+  # ============================================================
+  # Job 9: 打包 Python 工具（无需编译）
+  # ============================================================
+  build-python-tools:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 OpenLane
+        run: |
+          git clone --depth=1 \
+            https://github.com/The-OpenROAD-Project/OpenLane.git \
+            ${{ github.workspace }}/openlane
+
+      - name: 📥 自动克隆 cocotb
+        run: |
+          git clone --depth=1 \
+            https://github.com/cocotb/cocotb.git \
+            ${{ github.workspace }}/cocotb
+
+      - name: 📥 自动克隆 OpenFASOC
+        run: |
+          git clone --depth=1 \
+            https://github.com/idea-fasoc/OpenFASOC.git \
+            ${{ github.workspace }}/openfasoc
+
+      - name: 📦 打包 Python 工具
+        run: |
+          mkdir -p artifacts/python-tools
+          cp -r ${{ github.workspace }}/openlane artifacts/python-tools/
+          cp -r ${{ github.workspace }}/cocotb artifacts/python-tools/
+          cp -r ${{ github.workspace }}/openfasoc artifacts/python-tools/
+
+      - name: ⬆️ 上传 Python 工具
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-tools
+          path: artifacts/python-tools/
+          retention-days: 30
+
+  # ============================================================
+  # Job 10: 编译 KiCad（可选）
+  # ============================================================
+  build-kicad:
+    needs: install-dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 自动克隆 KiCad
+        run: |
+          git clone --depth=1 \
+            --branch 8.0 \
+            https://gitlab.com/kicad/code/kicad.git \
+            ${{ github.workspace }}/kicad
+
+      - name: 🏗️ 自动编译 KiCad
+        working-directory: ${{ github.workspace }}/kicad
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_PREFIX }}/kicad \
+            -DKICAD_SKIP_BOOST=ON \
+            -DKICAD_SKIP_OCC=ON \
+            -DKICAD_USE_OCE=OFF
+          make -j$(nproc)
+          sudo make install
+
+      - name: 📦 打包 KiCad
+        run: |
+          mkdir -p artifacts/kicad
+          sudo cp -r ${{ env.INSTALL_PREFIX }}/kicad/* artifacts/kicad/
+
+      - name: ⬆️ 上传 KiCad
+        uses: actions/upload-artifact@v4
+        with:
+          name: kicad
+          path: artifacts/kicad/
+          retention-days: 30
+
+  # ============================================================
+  # Job 11: 生成汇总报告
+  # ============================================================
+  build-summary:
+    needs:
+      - build-openroad
+      - build-opensta
+      - build-yosys
+      - build-klayout
+      - build-opentimer
+      - build-netgen
+      - build-tatum
+      - build-python-tools
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📊 生成编译报告
+        run: |
+          echo "# BUXLU-EDA 编译报告" > report.md
+          echo "" >> report.md
+          echo "**编译时间：** \`$(date '+%Y-%m-%d %H:%M:%S')\`" >> report.md
+          echo "**运行状态：** \`${{ github.run_number }}\`" >> report.md
+          echo "" >> report.md
+          echo "## 编译结果" >> report.md
+          echo "" >> report.md
+          echo "| 工具 | 状态 |" >> report.md
+          echo "|------|------|" >> report.md
+          echo "| OpenROAD | \`${{ needs.build-openroad.result }}\` |" >> report.md
+          echo "| OpenSTA | \`${{ needs.build-opensta.result }}\` |" >> report.md
+          echo "| Yosys | \`${{ needs.build-yosys.result }}\` |" >> report.md
+          echo "| KLayout | \`${{ needs.build-klayout.result }}\` |" >> report.md
+          echo "| OpenTimer | \`${{ needs.build-opentimer.result }}\` |" >> report.md
+          echo "| netgen | \`${{ needs.build-netgen.result }}\` |" >> report.md
+          echo "| tatum | \`${{ needs.build-tatum.result }}\` |" >> report.md
+          echo "| Python工具 | \`${{ needs.build-python-tools.result }}\` |" >> report.md
+          echo "" >> report.md
+          echo "## 产物下载" >> report.md
+          echo "在 Actions 页面下载 Artifact。" >> report.md
+          cat report.md
+
+      - name: ⬆️ 上传报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-report
+          path: report.md
+          retention-days: 90
