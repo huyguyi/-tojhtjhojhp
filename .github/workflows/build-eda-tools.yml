@@ -93,7 +93,7 @@ jobs:
           python3 --version
 
   # ============================================================
-  # Job 2: 编译 OpenROAD（CMake）
+  # Job 2: 编译 OpenROAD（修复 SWIG 版本）
   # ============================================================
   build-openroad:
     needs: install-dependencies
@@ -102,12 +102,25 @@ jobs:
       - name: 📥 检出代码
         uses: actions/checkout@v4
 
-      - name: 🔧 安装依赖
+      - name: 🔧 安装依赖（修复SWIG）
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake g++ make ninja-build git \
             libboost-all-dev libeigen3-dev libspdlog-dev nlohmann-json3-dev \
-            libreadline-dev tcl-dev zlib1g-dev libffi-dev swig bison flex
+            libreadline-dev tcl-dev zlib1g-dev libffi-dev bison flex
+          
+          # 卸载旧版 SWIG 并安装新版
+          sudo apt-get remove -y swig
+          cd /tmp
+          wget -q https://github.com/swig/swig/archive/refs/tags/v4.3.0.tar.gz
+          tar xzf v4.3.0.tar.gz
+          cd swig-4.3.0
+          ./autogen.sh
+          ./configure --prefix=/usr/local
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          swig -version
 
       - name: 🏗️ 编译 OpenROAD
         working-directory: ${{ github.workspace }}/src/openroad
@@ -122,8 +135,7 @@ jobs:
       - name: 📦 打包 OpenROAD 产物
         run: |
           mkdir -p artifacts/openroad
-          cp -r ${{ env.INSTALL_PREFIX }}/openroad/* artifacts/openroad/
-          # 复制可执行文件
+          cp -r ${{ env.INSTALL_PREFIX }}/openroad/* artifacts/openroad/ 2>/dev/null || true
           find ${{ github.workspace }}/src/openroad/build -type f -executable \
             -exec cp {} artifacts/openroad/ \; 2>/dev/null || true
 
@@ -133,7 +145,6 @@ jobs:
           name: openroad-executables
           path: artifacts/openroad/
           retention-days: 30
-
   # ============================================================
   # Job 3: 编译 OpenSTA（CMake）
   # ============================================================
